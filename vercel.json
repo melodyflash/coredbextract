@@ -1,0 +1,14 @@
+{
+    "builds": [
+        {
+            "src": "wrapper_coredb.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "wrapper_coredb.py"
+        }
+    ]
+}
