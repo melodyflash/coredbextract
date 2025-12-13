@@ -146,21 +146,43 @@ class ExcelBuilder:
                 ])
                 
     def get_template_path(self):
-        """Resolves the path to the template file, handling frozen state (PyInstaller)."""
+        """Resolves the path to the template file, handling frozen state (PyInstaller) and Cloud."""
         filename = "Aloha_Import_Sample.xlsx"
+        
+        # 1. PyInstaller / Frozen
         if getattr(sys, 'frozen', False):
-            # If frozen, look in sys._MEIPASS (onefile) or relative to executable (onedir)
             if hasattr(sys, '_MEIPASS'):
                 path = os.path.join(sys._MEIPASS, filename)
                 if os.path.exists(path):
                     return path
-            
-            # Fallback for onedir or if not in MEIPASS
             path = os.path.join(os.path.dirname(sys.executable), filename)
             if os.path.exists(path):
                 return path
+
+        # 2. Development / Streamlit Cloud
+        # Check current directory
+        if os.path.exists(filename):
+            return filename
+            
+        # Check relative to this script (e.g. if script is in coredbextract/ and file is in root/)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Default local path
+        # Check in same folder as excel_builder.py
+        path_same = os.path.join(current_dir, filename)
+        if os.path.exists(path_same):
+            return path_same
+            
+        # Check in parent folder (common structure)
+        path_parent = os.path.join(current_dir, "..", filename)
+        if os.path.exists(path_parent):
+            return path_parent
+            
+        # Check in parent/parent (just in case)
+        path_pp = os.path.join(current_dir, "..", "..", filename)
+        if os.path.exists(path_pp):
+            return path_pp
+            
+        # Fallback to filename (will likely fail if we got here, but legitimate last resort)
         return filename
 
     def build_excel(self) -> bytes:
