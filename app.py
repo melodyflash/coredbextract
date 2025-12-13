@@ -57,19 +57,19 @@ MODEL_PRICING = {
     "gemini-2.0-flash-exp": {
         "input_price": 0.00,  # Currently Free Preview
         "output_price": 0.00,
-        "rpm": "10 RPM (Free Tier)",
+        "rpm": "10 Requests Per Minute (Free Tier)",
         "limit": "1M Context"
     },
     "gemini-2.0-flash": { # Also covers 2.5 Flash, 2.0 Flash Lite, 2.5 Flash Lite
         "input_price": 0.075,
         "output_price": 0.30,
-        "rpm": "15 RPM (Free) / 1000 RPM (Pay)",
+        "rpm": "15 Requests Per Minute (Free) / 1000 pay-as-you-go",
         "limit": "1M Context"
     },
     "gemini-2.5-pro": { # Also covers 3.0 Pro
         "input_price": 3.50,
         "output_price": 10.50,
-        "rpm": "2 RPM (Free) / 360 RPM (Pay)",
+        "rpm": "2 Requests Per Minute (Free) / 360 pay-as-you-go",
         "limit": "2M Context"
     },
     "gpt-4o": {
@@ -242,6 +242,8 @@ with tab_upload:
         - **Model**: {selected_model_name}
         - **Est. Cost**: < ${est_cost:.4f} USD
         - **RPM Limit**: {rpm_info}
+        
+        *Note: 1 Request = Processing 1 Uploaded File.*
         """)
 
         if st.button("🚀 Extract Menu Data", type="primary"):

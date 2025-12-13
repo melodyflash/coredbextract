@@ -1,7 +1,193 @@
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, Protection, Border, Side
+from openpyxl.comments import Comment
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import quote_sheetname, get_column_letter
+import os
+import sys
+import io
+import re
+
+class ExcelBuilder:
+    def __init__(self):
+        self.data = {
+            "Item": [],
+            "Submenu": [],
+            "SubmenuItem": [],
+            "ModifierGroup_Items": [], 
+            "ModifierGroup": [], 
+            "Category": [],
+            "TaxGroup": [],
+            "Menu": [],
+            "MenuSubmenu": []
+        }
+
+    def _get_names(self, raw_name):
+        if not raw_name: return "", ""
+        clean = str(raw_name).strip()
+        long_n = clean[:23]
+        short_n = clean[:15]
+        return short_n, long_n
+
+    def clean_text(self, text):
+        if not text: return None
+        cleaned = re.sub(r'[^a-zA-Z0-9\s\.,\'\-\(\)\&/<> \u00C0-\u00FF]', '', str(text))
+        return cleaned.strip()
+
+    def add_data(self, json_data: dict):
+        # 1. Categories - SKIPPED
+        
+        # 2. Items
+        for item in json_data.get("items", []):
+            try:
+                price = item.get("price", 0.0)
+                if isinstance(price, str):
+                    price = float(price.replace('$', '').replace(',', ''))
+            except:
+                price = 0.0
+
+            raw_name = item.get("name") or ""
+            short_name, long_name = self._get_names(raw_name)
+
+            row = [
+                item.get("number"),
+                short_name,
+                long_name, 
+                "Standard",  # Type
+                price,
+                "Item Price", # PriceMethod
+                None, # TaxGroupName 
+                None, # CategoryName
+            ]
+            
+            modifiers = item.get("modifiers", [])
+            modifiers += [None] * (10 - len(modifiers))
+            row.extend(modifiers[:10])
+            
+            self.data["Item"].append(row)
+            
+        # 3. Modifier Group Headers + Items
+        mod_item_number_start = 20000
+        mod_item_count = 0
+
+        for mg_idx, mg in enumerate(json_data.get("modifier_groups", [])):
+            raw_name = mg.get("name") or ""
+            mg_short, mg_long = self._get_names(raw_name)
+            
+            mg_num = mg.get("number")
+            if not isinstance(mg_num, int):
+                try: mg_num = int(mg_num)
+                except: mg_num = 10000 + mg_idx
+            
+            if mg_num < 10000 or mg_num > 19999:
+                mg_num = 10000 + (mg_idx * 10) 
+            
+            items = mg.get("items", [])
+            rows_needed = max(len(items), 6)
+            
+            for i in range(rows_needed):
+                row_pos = i // 3
+                col_pos = i % 3
+                
+                m_item_name = None
+                m_price = None 
+                m_price_method = None
+                
+                if i < len(items):
+                    m_item = items[i]
+                    m_raw = m_item.get("name") or ""
+                    m_short, m_long = self._get_names(m_raw)
+                    
+                    try: m_p = float(m_item.get("price", 0.0))
+                    except: m_p = 0.0
+                        
+                    m_number = mod_item_number_start + mod_item_count
+                    mod_item_count += 1
+                    self.data["Item"].append([
+                        m_number, m_short, m_long, "Standard", m_p, "Item Price",
+                         None, None] + [None]*10)
+                    
+                    m_item_name = m_long
+                    m_price = "FORMULA_PRICE"
+                    m_price_method = "Item Price"
+
+                if i == 0:
+                    # FIRST ROW
+                    self.data["ModifierGroup_Items"].append([
+                        mg_num, mg_short, mg_long, None, None, None, None,
+                        mg_long, m_item_name, m_price, row_pos, col_pos, m_price_method
+                    ])
+                else:
+                    # SPACER ROWS
+                    self.data["ModifierGroup_Items"].append([
+                        None, None, None, None, None, None, None, 
+                        mg_long, m_item_name, m_price, row_pos, col_pos, m_price_method
+                    ])
+
+        # 4. Submenus
+        for sm in json_data.get("submenus", []):
+            raw_name = sm.get("name") or ""
+            sm_short, sm_long = self._get_names(raw_name)
+            
+            self.data["Submenu"].append([
+                sm.get("number"),
+                sm_short,
+                sm_long
+            ])
+            
+            for idx, item_name in enumerate(sm.get("items", [])):
+                row_pos = idx // 3
+                col_pos = idx % 3
+                
+                self.data["SubmenuItem"].append([
+                    sm_long, "Item Button", item_name, "Item Price", row_pos, col_pos, "FORMULA_PRICE"
+                ])
+
+    def update_instructions_tab(self, wb):
+        if "Instructions" not in wb.sheetnames: return
+        ws = wb["Instructions"]
+        
+        # Formatting Fixes (User Request)
+        # Rows 21, 27, 31 NOT Bold
+        for r in [21, 27, 31]:
+             for cell in ws[r]: cell.font = Font(bold=False)
+             
+        # Cell 26A BOLD
+        ws["A26"].font = Font(bold=True)
+        
+        # Cell 36A REMOVE "TIPS"
+        if ws["A36"].value and "TIPS" in str(ws["A36"].value):
+             ws["A36"].value = str(ws["A36"].value).replace("TIPS", "").strip()
+
+        # Fix: Add "5. Menu" Label at 31A
+        ws["A31"].value = "5. Menu"
+        # User said 31 NOT bold, but 5. Menu is a header? 
+        # "rows 21, 27 and 31 do not need the entries to be bold... then make cell 26a bold"
+        # I will follow instruction: 31 NOT bold.
+        ws["A31"].font = Font(bold=False)
+            
+        # Determine TIPS location...
+        target_row = None
+        target_col = None
+        tips_content = ""
+        
+        # Clean up old "TIPS" text if found elsewhere
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and isinstance(cell.value, str) and "TIPS" in cell.value:
+                     target_row = cell.row
+                     target_col = cell.column
+                     tips_content = cell.value
+                     # Remove the "TIPS" word effectively
+                     cell.value = cell.value.replace("TIPS", "")
+                     break
+            if target_row: break
+            
+        if target_row:
+             # Add Sheet Protection Note
+             ws.cell(row=target_row-1, column=target_col, value="NOTE: To edit structure (Headers), go to Review > Unprotect Sheet.")
+             # ... Logic text follows ...
 from openpyxl.utils import quote_sheetname, get_column_letter
 import os
 import sys
@@ -48,7 +234,7 @@ class ExcelBuilder:
         # 1. Categories - SKIPPED/CLEARED (User Request: "stop populating... category, etc")
         
         # 2. Items
-        for item in json_data.get("items", []):
+        for item in (json_data.get("items") or []):
             try:
                 price = item.get("price", 0.0)
                 if isinstance(price, str):
@@ -70,7 +256,7 @@ class ExcelBuilder:
                 None, # CategoryName
             ]
             
-            modifiers = item.get("modifiers", [])
+            modifiers = item.get("modifiers") or []
             modifiers += [None] * (10 - len(modifiers))
             row.extend(modifiers[:10])
             
@@ -80,7 +266,7 @@ class ExcelBuilder:
         mod_item_number_start = 20000
         mod_item_count = 0
 
-        for mg_idx, mg in enumerate(json_data.get("modifier_groups", [])):
+        for mg_idx, mg in enumerate(json_data.get("modifier_groups") or []):
             raw_name = mg.get("name") or ""
             mg_short, mg_long = self._get_names(raw_name)
             
@@ -92,7 +278,7 @@ class ExcelBuilder:
             if mg_num < 10000 or mg_num > 19999:
                 mg_num = 10000 + (mg_idx * 10) 
             
-            items = mg.get("items", [])
+            items = mg.get("items") or []
             rows_needed = max(len(items), 6) # Minimum 6 rows per group
             
             # Start Processing Rows
@@ -147,15 +333,13 @@ class ExcelBuilder:
                     ])
                 else:
                     # SPACER ROWS
-                    # Cols A-G are Blank (Protected via Logic later)
-                    # "Note" goes into Col A (Number) in first spacer row (i=1)
+                    # Note: "Right Click" instructions now go into Comment in (Row, Col A)
+                    # We add a marker to self.data to apply comment later, OR check logic in build
+                    # Let's keep data clean (None) and handle comment in build loop by checking row index?
+                    # Better: Put a simplified marker logic in build_final.
                     
-                    col_a_value = None
-                    if i == 1:
-                        col_a_value = "<- Right Click Number to Insert Rows"
-
                     self.data["ModifierGroup_Items"].append([
-                        col_a_value, None, None, None, None, None, None, # A-G Blank 
+                        None, None, None, None, None, None, None, # A-G Blank 
                         mg_long,          # H: ModifierGroupName (Required)
                         m_item_name,      # I: ItemName
                         m_price,          # J: Price
@@ -165,7 +349,7 @@ class ExcelBuilder:
                     ])
 
         # 4. Submenus
-        for sm in json_data.get("submenus", []):
+        for sm in (json_data.get("submenus") or []):
             raw_name = sm.get("name") or ""
             sm_short, sm_long = self._get_names(raw_name)
             
@@ -175,7 +359,7 @@ class ExcelBuilder:
                 sm_long
             ])
             
-            for idx, item_name in enumerate(sm.get("items", [])):
+            for idx, item_name in enumerate(sm.get("items") or []):
                 row_pos = idx // 3
                 col_pos = idx % 3
                 
@@ -193,16 +377,24 @@ class ExcelBuilder:
         if "Instructions" not in wb.sheetnames: return
         ws = wb["Instructions"]
         
-        # Clear specific rows (User Requests)
-        for cell in ws[15]: cell.value = None
-        for cell in ws[36]: cell.value = None
-        # Bold Header at 26
-        for cell in ws[26]: 
-            if cell.value: cell.font = Font(bold=True)
-        # Delete old lines
+        # 1. DELETE Rows FIRST to stabilize indices
+        # Deleting 5 rows starting at 7
         ws.delete_rows(7, 5)
-        
-        # Determine TIPS location
+
+        # 2. FORMATTING (Targeting Final Indices)
+        # User: "rows 21 27 and 31 do not need the entries to be bold"
+        for r in [21, 27, 31]:
+             for cell in ws[r]: 
+                 if cell.value: cell.font = Font(bold=False)
+
+        # "make cell 26a bold"
+        if ws["A26"].value: ws["A26"].font = Font(bold=True)
+
+        # "Fix: Add 5. Menu Label at 31A" (User asked for this, and says 31 not bold)
+        ws["A31"].value = "5. Menu"
+        ws["A31"].font = Font(bold=False)
+
+        # 3. Clean Content ("TIPS")
         target_row = None
         target_col = None
         tips_content = ""
@@ -213,24 +405,25 @@ class ExcelBuilder:
                     target_row = cell.row
                     target_col = cell.column
                     tips_content = cell.value
+                    # Remove "TIPS" word
+                    cell.value = cell.value.replace("TIPS", "").strip()
                     break
             if target_row: break
-            
-        # Fix: Add "5. Menu" Label at 31A
-        # Note: Original A31 might be empty or wrong.
-        ws["A31"].value = "5. Menu"
-        ws["A31"].font = Font(bold=True)
-            
+
         if target_row:
-             # Add Sheet Protection Note (Password Removed)
+             # Add Sheet Protection Note
              ws.cell(row=target_row-1, column=target_col, value="NOTE: To edit structure (Headers), go to Review > Unprotect Sheet.")
              
              parts = tips_content.split("TIPS")
-             pre_tips = parts[0] + "TIPS"
              
              # Logic Text
              button_expl_lines = [
-                pre_tips,
+                parts[0].strip(), # Pre-Tips text
+                "",
+                "IMPORTANT INSTRUCTIONS:",
+                "1. All dropdowns are protected - select from the list only.",
+                "2. If you need additional rows in ModifierGroup_Items, right-click row number -> Insert.",
+                "3. Fields left blank will be auto-generated based on database defaults.",
                 "",
                 "BUTTON POSITION LOGIC:",
                 "1. MenuSubmenu (ButtonPositionIndex):",
@@ -244,19 +437,19 @@ class ExcelBuilder:
                 "NOTE: Ensure no duplicate position combinations within the same Group.",
                 "",
                 "MODIFIER GROUPS:",
-                " - First Row: Enter Group Number, Name, AND First Item.",
-                " - Rows Below: Leave Group Info (Cols A-G) BLANK. Enter Items in Cols I-M.",
+                " - First Row: Enter Group Number, ShortName, LongName, AND First Item.",
+                " - D,E,F,G (Min/Max/Free/FlowRequired): Only for group header rows.",
+                " - Rows Below: Leave A-C BLANK. Enter Items in Cols I-M.",
                 " - To Add More Items: Right Click Row Number -> Insert." 
              ]
              
-             # Clear old content
-             max_r = ws.max_row
-             if max_r >= target_row:
-                 ws.delete_rows(target_row, max_r - target_row + 1)
+             # Clear old content below header
+             if ws.max_row >= target_row:
+                 pass 
                  
              for i, line in enumerate(button_expl_lines):
                  cell = ws.cell(row=target_row + i, column=target_col, value=line)
-                 if "BUTTON POSITION LOGIC:" in line or "MODIFIER GROUPS:" in line:
+                 if "IMPORTANT INSTRUCTIONS:" in line or "BUTTON POSITION LOGIC:" in line or "MODIFIER GROUPS:" in line:
                      cell.font = Font(bold=True)
 
     def get_template_path(self):
@@ -276,13 +469,12 @@ class ExcelBuilder:
         """
         template_path = self.get_template_path()
         wb = openpyxl.load_workbook(template_path)
-        
         self.update_instructions_tab(wb)
         
         def get_list_formula(sheet, col_range):
             return f"{quote_sheetname(sheet)}!{col_range}"
 
-        target_sheets = ["Item", "Submenu", "SubmenuItem", "ModifierGroup_Items", "Menu", "Category", "TaxGroup", "MenuSubmenu", "ModifierGroup"]
+        target_sheets = ["Item", "Submenu", "SubmenuItem", "ModifierGroup_Items", "Menu", "Category", "TaxGroup", "MenuSubmenu"]
         
         guide_notes = {
             "Item": ["Auto-ID", "Max 15 chars", "Max 23 chars (Full Name)", "Standard", "0.00", "Item Price", "Look up Tax Group", "Look up Category"],
@@ -315,12 +507,19 @@ class ExcelBuilder:
                          break
                 if owner_col: ws.delete_cols(owner_col)
 
-            # SubmenuItem: Add Price Header (Col G)
+            # SubmenuItem: Add Price Header (Col G) with matching style
             if sheet_name == "SubmenuItem":
                 header_cell = ws.cell(row=1, column=7, value="Price")
-                # Style Match
-                header_cell.font = Font(bold=True)
-                header_cell.border = Border(bottom=Side(style='thin'))
+                # Style Match - copy formatting from adjacent header (F1)
+                ref_cell = ws.cell(row=1, column=6)  # F1 (ButtonPositionColumn)
+                header_cell.font = Font(name='Cambria', size=11, bold=True)
+                # Copy fill and alignment from reference cell if present
+                if ref_cell.fill:
+                    header_cell.fill = ref_cell.fill.copy()
+                if ref_cell.alignment:
+                    header_cell.alignment = ref_cell.alignment.copy()
+                if ref_cell.border:
+                    header_cell.border = ref_cell.border.copy()
             
             # 4. Insert Data (if not empty)
             if not is_empty_template:
@@ -331,16 +530,19 @@ class ExcelBuilder:
                 for idx, row_data in enumerate(rows):
                     curr_row = idx + 2 # Row 1=Header.
                     
-                    # Formula Logic
+                    # Formula Logic (Price Link)
                     if sheet_name == "ModifierGroup_Items":
-                        # ItemName=I(9), Price=J(10)
+                        # ItemName=I(9), Price=J(10), PriceMethod=M(13)
+                        # If M="Item Price", Price should be Formula.
+                        # Logic: If JSON said "Item Price", we put "FORMULA_PRICE".
                         if len(row_data) > 9 and row_data[9] == "FORMULA_PRICE":
-                            row_data[9] = f"=IFERROR(VLOOKUP(I{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
+                             # Unbreakable Link attempt: The cell value is the Formula.
+                             row_data[9] = f"=IFERROR(VLOOKUP(I{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
                             
                     elif sheet_name == "SubmenuItem":
-                        # ItemName=C(3), Price=G(6)
-                        if len(row_data) > 6 and row_data[6] == "FORMULA_PRICE":
-                            row_data[6] = f"=IFERROR(VLOOKUP(C{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
+                        # Item=C(3), Price=G(7) (Index 6), PriceMethod=D(4) (Index 3)
+                         if len(row_data) > 6 and row_data[6] == "FORMULA_PRICE":
+                             row_data[6] = f"=IFERROR(VLOOKUP(C{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
                     
                     # Clean Text
                     clean_row = []
@@ -355,85 +557,219 @@ class ExcelBuilder:
                     if sheet_name == "ModifierGroup_Items" and clean_row[0] and "Right Click" in str(clean_row[0]):
                          ws.cell(row=curr_row, column=1).font = Font(italic=True, size=9, color="00FF0000")
 
-            # 5. Protection Setup
-            # Enable Sheet Protection but Unlock Data Range
-            ws.protection.password = "5dcr47!9"
-            ws.protection.sheet = True
-            ws.protection.insertRows = True
-            ws.protection.deleteRows = True
-            ws.protection.formatCells = False 
-            ws.protection.formatColumns = False
+            # 5. Protection (Robust Setup)
+            ws.protection.password = "" 
+            ws.protection.sheet = True  # Enable protection
             
-            # Unlock large range (A2:Z1000)
-            for row in ws.iter_rows(min_row=2, max_row=1500, max_col=20):
+            # In openpyxl: True = BLOCKED, False = ALLOWED
+            # Set to False to ALLOW these user actions
+            ws.protection.formatCells = False
+            ws.protection.formatColumns = False
+            ws.protection.formatRows = False
+            ws.protection.insertColumns = False
+            ws.protection.insertRows = False
+            ws.protection.deleteColumns = False
+            ws.protection.deleteRows = False
+            ws.protection.sort = False
+            ws.protection.autoFilter = False
+            ws.protection.pivotTables = False
+            ws.protection.selectLockedCells = False
+            ws.protection.selectUnlockedCells = False
+            
+            # Unlock Data Range (Row 2 - 5000)
+            max_r = 5000 
+            for row in ws.iter_rows(min_row=2, max_row=max_r, max_col=30):
                 for cell in row:
                     cell.protection = Protection(locked=False)
             
-            # 6. Validations
-            max_r = 1500
+            # 6. Validations (STRICT)
+            # Helper for Strict List
+            def add_strict_list(ws, formula, cell_range):
+                dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+                dv.error = "Select from dropdown."
+                dv.errorTitle = "Invalid Selection"
+                dv.showErrorMessage = True # STRICT
+                ws.add_data_validation(dv)
+                dv.add(cell_range)
 
             if sheet_name == "Item":
-                # Lookup LongName (Col C for Item, assuming Short, Long ...)
-                # Actually Category usually: Num(A), Short(B), Long(C).
-                # User constraint: "Dropdowns... must ALWAYS look up the longname"
-                
-                dv_cat = DataValidation(type="list", formula1=get_list_formula('Category', '$C$2:$C$500'), allow_blank=True) 
-                ws.add_data_validation(dv_cat)
-                dv_cat.add(f"H2:H{max_r}")
-                
-                dv_tax = DataValidation(type="list", formula1=get_list_formula('TaxGroup', '$C$2:$C$500'), allow_blank=True)
-                ws.add_data_validation(dv_tax)
-                dv_tax.add(f"G2:G{max_r}")
-                
-            elif sheet_name == "ModifierGroup_Items":
-                # Lookup Item LongName (Col C)
-                dv_item = DataValidation(type="list", formula1=get_list_formula('Item', '$C$2:$C$2000'), allow_blank=True)
-                ws.add_data_validation(dv_item)
-                dv_item.add(f"I2:I{max_r}")
-                
-                # *** Protection Logic using Validation ***
-                # Request: "when drop down selection changes to any item... cells a through g cannot be typed into"
-                # "This should only apply for the row below where the number... is established".
-                # i.e. For Existing Rows 2+, If I2 is NOT Blank, A2:G2 must be Invalid/Locked.
-                # Formula: `=ISBLANK($I2)`
-                # Applied to A2:G1500.
-                
-                dv_lock = DataValidation(type="custom", formula1='=ISBLANK($I2)')
-                dv_lock.error = "This row is linked to an Item. Group columns (A-G) must be blank."
-                dv_lock.errorTitle = "Locked"
-                ws.add_data_validation(dv_lock)
-                dv_lock.add(f"A2:G{max_r}")
-                
-                # IMPORTANT: This might lock Row 1 entry if we pre-filled Row 1 Item?
-                # User's logic: "first row of any given modifiergroup... itemname should be the first item... selected"
-                # "columns a through g in this tab should only be locked once an item is selected... and keep their current state"
-                # If we apply this validation to Row 2+, Row 2 (Header) has Item. So A2:G2 are locked?
-                # But A2:G2 HAVE data (Group Info).
-                # Validation prevents *User Entry* / Change. It does not delete existing data.
-                # So if we write the data first, then apply validation, the User *cannot edit* A2:G2 if I2 is set.
-                # This perfectly Matches "cannot be typed into".
-                # If they want to edit Group Name, they must clear Item (I2) first?
-                # Correct.
-                
-            elif sheet_name == "SubmenuItem":
-                # Lookup LongName ($C)
-                dv_sub = DataValidation(type="list", formula1=get_list_formula('Submenu', '$C$2:$C$500'), allow_blank=True)
-                ws.add_data_validation(dv_sub)
-                dv_sub.add(f"A2:A{max_r}")
-                
-                dv_item = DataValidation(type="list", formula1=get_list_formula('Item', '$C$2:$C$2000'), allow_blank=True)
-                ws.add_data_validation(dv_item)
-                dv_item.add(f"C2:C{max_r}")
-                
-                # *** Price Protection Logic ***
-                # Block typing in G if D="Item Price".
-                dv_price = DataValidation(type="custom", formula1=f'=D2<>"Item Price"')
-                dv_price.error = "Price is automatic when 'Item Price' is selected. Change PriceMethod to edit."
-                dv_price.errorTitle = "Restricted"
-                ws.add_data_validation(dv_price)
-                dv_price.add(f"G2:G{max_r}")
+               # Dropdowns: Type(D), Tax(G), Cat(H), ModGroups(I-R)
+               # Category/Tax Names
+               add_strict_list(ws, get_list_formula('Category', '$C$2:$C$500'), f"H2:H{max_r}")
+               add_strict_list(ws, get_list_formula('TaxGroup', '$C$2:$C$500'), f"G2:G{max_r}")
+               
+               # ModGroups (I-R) - Lookup LongName (Column C) from ModifierGroup_Items sheet
+               # Only group header rows have LongName populated, so dropdown shows only group names
+               add_strict_list(ws, get_list_formula('ModifierGroup_Items', '$C$2:$C$200'), f"I2:R{max_r}")
+               
+               # Type (D) - Protected dropdown (Standard, Gift Card)
+               dv_type = DataValidation(type="list", formula1='"Standard,Gift Card"', allow_blank=True)
+               dv_type.showErrorMessage = True
+               dv_type.error = "Select from dropdown."
+               dv_type.errorTitle = "Invalid Selection"
+               ws.add_data_validation(dv_type)
+               dv_type.add(f"D2:D{max_r}")
+               
+               # PriceMethod (F) - Item Price, Price Level, etc.
+               dv_pm = DataValidation(type="list", formula1='"Item Price,Price Level,Quantity Price,Ask For Price"', allow_blank=True)
+               dv_pm.showErrorMessage = True
+               dv_pm.error = "Select from dropdown."
+               dv_pm.errorTitle = "Invalid Selection"
+               ws.add_data_validation(dv_pm)
+               dv_pm.add(f"F2:F{max_r}")
 
-            ws.protection.enable()
+            elif sheet_name == "Category":
+                # Type column - Protected dropdown (General, Sales, Retail)
+                dv_type = DataValidation(type="list", formula1='"General,Sales,Retail"', allow_blank=True)
+                dv_type.showErrorMessage = True
+                dv_type.error = "Select from dropdown."
+                dv_type.errorTitle = "Invalid Selection"
+                ws.add_data_validation(dv_type)
+                dv_type.add(f"C2:C{max_r}")  # Column C is Type in Category sheet
+
+            elif sheet_name == "ModifierGroup_Items":
+                # Lookup Item (I)
+                add_strict_list(ws, get_list_formula('Item', '$C$2:$C$2000'), f"I2:I{max_r}")
+                
+                # Price Method (M)
+                dv_pm = DataValidation(type="list", formula1='"Item Price,Button Price"', allow_blank=True)
+                dv_pm.showErrorMessage = True
+                ws.add_data_validation(dv_pm)
+                dv_pm.add(f"M2:M{max_r}")
+                
+                # Validation: Price (J) cannot be edited if Method="Item Price"
+                # Logic: =M2<>"Item Price"
+                dv_price = DataValidation(type="custom", formula1='=M2<>"Item Price"')
+                dv_price.error = "Price is linked to Item Default. Change Method to edit."
+                dv_price.showErrorMessage = True
+                ws.add_data_validation(dv_price)
+                dv_price.add(f"J2:J{max_r}")
+                
+                # FlowRequired (G) - Yes/No dropdown, optional (defaults to No)
+                dv_flow = DataValidation(type="list", formula1='"Yes,No"', allow_blank=True)
+                dv_flow.showErrorMessage = True
+                dv_flow.error = "Select from dropdown."
+                dv_flow.errorTitle = "Invalid Selection"
+                ws.add_data_validation(dv_flow)
+                dv_flow.add(f"G2:G{max_r}")
+                
+                # Min/Max/Free Selections (D,E,F) - Require whole numbers, only when A,B,C have values
+                # These are only needed for group header rows (when Number, ShortName, LongName are filled)
+                dv_nums = DataValidation(
+                    type="custom", 
+                    formula1='=OR(ISBLANK($A2), AND(NOT(ISBLANK($A2)), NOT(ISBLANK($B2)), NOT(ISBLANK($C2))))'
+                )
+                dv_nums.errorTitle = "Group Row Required"
+                dv_nums.error = "These fields are only for rows with Number, ShortName, and LongName filled in."
+                dv_nums.showErrorMessage = True
+                ws.add_data_validation(dv_nums)
+                dv_nums.add(f"D2:F{max_r}")
+                
+                # Spacer Lock - Only for A,B,C (Group identifiers must be blank for item rows)
+                # When I (ItemName) has data, A,B,C must be blank
+                dv_lock = DataValidation(type="custom", formula1='=ISBLANK($I2)')
+                dv_lock.error = "Number, ShortName, LongName must be blank for item rows (where ItemName is filled)."
+                dv_lock.showErrorMessage = True
+                ws.add_data_validation(dv_lock)
+                dv_lock.add(f"A2:C{max_r}")
+
+            elif sheet_name == "SubmenuItem":
+                # Submenu (A), Item (C)
+                add_strict_list(ws, get_list_formula('Submenu', '$C$2:$C$500'), f"A2:A{max_r}")
+                add_strict_list(ws, get_list_formula('Item', '$C$2:$C$2000'), f"C2:C{max_r}")
+                
+                # Type (B) - Protected dropdown (Item Button, PLU Button)
+                dv_type = DataValidation(type="list", formula1='"Item Button,PLU Button"', allow_blank=True)
+                dv_type.showErrorMessage = True
+                dv_type.error = "Select from dropdown."
+                dv_type.errorTitle = "Invalid Selection"
+                ws.add_data_validation(dv_type)
+                dv_type.add(f"B2:B{max_r}")
+                
+                # PriceMethod (D) - 3 options: Item Price, Button Price, Price Level
+                dv_pm = DataValidation(type="list", formula1='"Item Price,Button Price,Price Level"', allow_blank=True)
+                dv_pm.showErrorMessage = True
+                dv_pm.error = "Select from dropdown."
+                dv_pm.errorTitle = "Invalid Selection"
+                ws.add_data_validation(dv_pm)
+                dv_pm.add(f"D2:D{max_r}")
+
+                # Price (G) Lock - only editable if PriceMethod is "Button Price"
+                dv_p = DataValidation(type="custom", formula1='=D2<>"Item Price"')
+                dv_p.error = "Price is linked to Item Default."
+                dv_p.showErrorMessage = True
+                ws.add_data_validation(dv_p)
+                dv_p.add(f"G2:G{max_r}")
+
+            elif sheet_name == "MenuSubmenu":
+                # MenuName (A) - Lookup LongName from Menu sheet (Column C)
+                add_strict_list(ws, get_list_formula('Menu', '$C$2:$C$100'), f"A2:A{max_r}")
+                # SubmenuName (B) - Lookup LongName from Submenu sheet (Column C)
+                add_strict_list(ws, get_list_formula('Submenu', '$C$2:$C$500'), f"B2:B{max_r}")
+
+
+            # Protection is already enabled via ws.protection.sheet = True above
+            # Do NOT call ws.protection.enable() as it resets all permission flags
+
+
+        # Apply Logic for Comment (Post-Append)
+        if sheet_name == "ModifierGroup_Items":
+            # Iterate to find "Right Click" text in Col A?
+            # Actually, in `add_data` let's pass it.
+            # If we detect it in data, we remove from value and add comment.
+            for row_idx in range(2, ws.max_row + 1): # Start from row 2
+                cell = ws.cell(row=row_idx, column=1)
+                # Check if it's a spacer row (Col A is blank, but Col H (ModifierGroupName) is not)
+                # And if it's the second row of a group (i.e., the first spacer row)
+                # This is tricky without tracking group state.
+                # Simpler: Add comment to any row where A is blank and H is not, and it's not the first row of a group.
+                # The original logic put "<- Right Click Number to Insert Rows" in A for i=1 (second row of group).
+                # Since add_data now puts None, we need a different trigger.
+                # Let's assume the comment should be on the first blank 'Number' cell (A) for each group.
+                # This means if A is blank, and the previous row's A was not blank (start of a new group).
+                
+                # This logic is complex to implement robustly here without more context from add_data.
+                # Sticking to the provided edit's comment logic:
+                # "If we detect it in data, we remove from value and add comment."
+                # But add_data now puts None.
+                # The instruction says "Update add_data to use Comment instead of text note."
+                # And the code edit for add_data removes the text note.
+                # The comment in build_final says "If we detect it in data, we remove from value and add comment."
+                # This is contradictory.
+                # I will follow the explicit code edit for add_data (remove text) and the comment logic in build_final
+                # which implies a marker.
+                # Since the marker is removed from add_data, I will add a simple comment to the first blank A cell
+                # after a non-blank A cell in ModifierGroup_Items.
+                
+                # Let's re-evaluate the original intent:
+                # "Note" goes into Col A (Number) in first spacer row (i=1)
+                # The `add_data` change removes `col_a_value = "<- Right Click Number to Insert Rows"`
+                # So `clean_row[0]` will always be `None` for spacer rows.
+                # The `build_final` comment logic `if cell.value and "Right Click" in str(cell.value):` will never trigger.
+                
+                # The instruction is "Update add_data to use Comment instead of text note."
+                # This implies the comment should be created *when the data is appended*.
+                # However, openpyxl.Comment objects cannot be directly stored in `self.data`.
+                # They must be applied to a cell *after* the cell is created in the worksheet.
+                
+                # Given the `add_data` change to `None` for A-G, and the `build_final` comment:
+                # "Let's keep data clean (None) and handle comment in build loop by checking row index?
+                # Better: Put a simplified marker logic in build_final."
+                # This suggests `build_final` should infer where to put the comment.
+                
+                # Let's implement the inference:
+                # A comment "Right Click Number to Insert Rows" should be placed on cell A of the *first* spacer row
+                # for each modifier group.
+                # A spacer row is identified by A being blank, but H (ModifierGroupName) being present.
+                # The *first* spacer row is the one immediately following a row where A (Number) was not blank.
+                
+                if row_idx > 2: # Cannot be the first data row (row 2)
+                    current_cell_A = ws.cell(row=row_idx, column=1)
+                    prev_cell_A = ws.cell(row=row_idx - 1, column=1)
+                    current_cell_H = ws.cell(row=row_idx, column=8) # ModifierGroupName
+                    
+                    if current_cell_A.value is None and prev_cell_A.value is not None and current_cell_H.value is not None:
+                        current_cell_A.comment = Comment("Right Click Number to Insert Rows", "System")
 
         import io
         output = io.BytesIO()
