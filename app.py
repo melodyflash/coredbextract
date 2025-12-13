@@ -11,16 +11,46 @@ st.markdown("Extract menu data from images or PDFs and generate import-ready Exc
 
 # Sidebar - Configuration
 st.sidebar.header("Configuration")
-provider = st.sidebar.selectbox("AI Provider", ["Google Gemini", "OpenAI (GPT-4o)", "Anthropic (Claude 3.5 Sonnet)", "DeepSeek (Chat Only)"])
+
+# Provider Options including specific Gemini/Gemma models
+provider_options = [
+    "Google Gemini 2.0 Flash",
+    "Google Gemini 2.0 Flash Lite",
+    "Google Gemini 2.0 Flash Exp",
+    "Google Gemini 2.5 Flash",
+    "Google Gemini 2.5 Flash Lite",
+    "Google Gemini 2.5 Pro",
+    "Google Gemini 3.0 Pro",
+    "Google Gemma 3 1B",
+    "Google Gemma 3 12B",
+    "Google Gemma 3 27B",
+    "OpenAI (GPT-4o)",
+    "Anthropic (Claude 3.5 Sonnet)",
+    "DeepSeek (Chat Only)"
+]
+
+provider_selection = st.sidebar.selectbox("AI Model", provider_options)
 api_key = st.sidebar.text_input("API Key", type="password", help="Enter API Key for the selected provider")
 
-provider_map = {
-    "Google Gemini": "gemini",
-    "OpenAI (GPT-4o)": "openai",
-    "Anthropic (Claude 3.5 Sonnet)": "anthropic",
-    "DeepSeek (Chat Only)": "deepseek"
+# Map selection to (provider_code, model_name)
+# For non-Gemini, model_name is ignored by current service implementation but we follow structure
+config_map = {
+    "Google Gemini 2.0 Flash": ("gemini", "gemini-2.0-flash"),
+    "Google Gemini 2.0 Flash Lite": ("gemini", "gemini-2.0-flash-lite"),
+    "Google Gemini 2.0 Flash Exp": ("gemini", "gemini-2.0-flash-exp"),
+    "Google Gemini 2.5 Flash": ("gemini", "gemini-2.5-flash"),
+    "Google Gemini 2.5 Flash Lite": ("gemini", "gemini-2.5-flash-lite"),
+    "Google Gemini 2.5 Pro": ("gemini", "gemini-2.5-pro"),
+    "Google Gemini 3.0 Pro": ("gemini", "gemini-3-pro"),
+    "Google Gemma 3 1B": ("gemini", "gemma-3-1b"),
+    "Google Gemma 3 12B": ("gemini", "gemma-3-12b"),
+    "Google Gemma 3 27B": ("gemini", "gemma-3-27b"),
+    "OpenAI (GPT-4o)": ("openai", "gpt-4o"),
+    "Anthropic (Claude 3.5 Sonnet)": ("anthropic", "claude-3-5-sonnet-20241022"),
+    "DeepSeek (Chat Only)": ("deepseek", "deepseek-chat")
 }
-selected_provider_code = provider_map[provider]
+
+selected_provider_code, selected_model_name = config_map.get(provider_selection, ("gemini", "gemini-2.0-flash"))
 
 # Main Area
 tab_upload, tab_url = st.tabs(["📂 File Upload", "🌐 URL (Coming Soon)"])
@@ -45,10 +75,10 @@ with tab_upload:
                         mime_type = "image/png"
                         
                     # 2. Call AI
-                    st.write(f"Analyzing with {provider}...")
+                    st.write(f"Analyzing with {provider_selection}...")
                     ai_service = AIService()
                     
-                    data = ai_service.analyze_file(file_path, mime_type, api_key, provider=selected_provider_code)
+                    data = ai_service.analyze_file(file_path, mime_type, api_key, provider=selected_provider_code, model_name=selected_model_name)
                     
                     if "error" in data:
                         st.error(f"AI Error: {data['error']}")
@@ -106,10 +136,10 @@ with tab_url:
                     st.caption(scraped_text[:500] + "...")
                         
                     # 2. Call AI
-                    st.write(f"Analyzing text with {provider}...")
+                    st.write(f"Analyzing text with {provider_selection}...")
                     ai_service = AIService()
                     
-                    data = ai_service.analyze_text(scraped_text, api_key, provider=selected_provider_code)
+                    data = ai_service.analyze_text(scraped_text, api_key, provider=selected_provider_code, model_name=selected_model_name)
                     
                     if "error" in data:
                         st.error(f"AI Error: {data['error']}")

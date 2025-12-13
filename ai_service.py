@@ -46,12 +46,12 @@ class AIService:
     6. Return ONLY the JSON. No markdown formatting.
     """
 
-    def analyze_file(self, file_path: str, mime_type: str, api_key: str, provider: str = "gemini") -> dict:
+    def analyze_file(self, file_path: str, mime_type: str, api_key: str, provider: str = "gemini", model_name: str = "gemini-2.0-flash") -> dict:
         """
         Analyze a file (Image or PDF) and return structured data.
         """
         if provider.lower() == "gemini":
-            return self._call_gemini_file(file_path, mime_type, api_key)
+            return self._call_gemini_file(file_path, mime_type, api_key, model_name)
         elif provider.lower() == "openai":
             return self._call_openai_file(file_path, mime_type, api_key)
         elif provider.lower() == "anthropic":
@@ -66,13 +66,13 @@ class AIService:
         else:
             raise NotImplementedError(f"Provider {provider} not supported for file analysis")
 
-    def analyze_text(self, text: str, api_key: str, provider: str = "gemini") -> dict:
+    def analyze_text(self, text: str, api_key: str, provider: str = "gemini", model_name: str = "gemini-2.0-flash") -> dict:
         """
         Analyze text content (from scraping).
         """
         if provider.lower() == "gemini":
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            model = genai.GenerativeModel(model_name)
             inputs = [self.SYSTEM_PROMPT, f"Analyze the following menu text:\n\n{text}"]
             return self._generate_with_retry(model, inputs)
         elif provider.lower() == "openai":
@@ -84,9 +84,9 @@ class AIService:
         else:
              raise NotImplementedError(f"Provider {provider} not supported for text analysis")
 
-    def _call_gemini_file(self, file_path: str, mime_type: str, api_key: str) -> dict:
+    def _call_gemini_file(self, file_path: str, mime_type: str, api_key: str, model_name: str) -> dict:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel(model_name)
         
         uploaded_file = genai.upload_file(file_path, mime_type=mime_type)
         inputs = [self.SYSTEM_PROMPT, uploaded_file]
