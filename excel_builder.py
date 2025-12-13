@@ -1,6 +1,6 @@
 
 import openpyxl
-from openpyxl.styles import Font, Alignment, Protection
+from openpyxl.styles import Font, Alignment, Protection, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import quote_sheetname, get_column_letter
 import os
@@ -216,9 +216,14 @@ class ExcelBuilder:
                     break
             if target_row: break
             
+        # Fix: Add "5. Menu" Label at 31A
+        # Note: Original A31 might be empty or wrong.
+        ws["A31"].value = "5. Menu"
+        ws["A31"].font = Font(bold=True)
+            
         if target_row:
-             # Add Sheet Protection Note
-             ws.cell(row=target_row-1, column=target_col, value="NOTE: To edit structure (Headers), go to Review > Unprotect Sheet. (No Password needed for basic, or '5dcr47!9').")
+             # Add Sheet Protection Note (Password Removed)
+             ws.cell(row=target_row-1, column=target_col, value="NOTE: To edit structure (Headers), go to Review > Unprotect Sheet.")
              
              parts = tips_content.split("TIPS")
              pre_tips = parts[0] + "TIPS"
@@ -312,7 +317,10 @@ class ExcelBuilder:
 
             # SubmenuItem: Add Price Header (Col G)
             if sheet_name == "SubmenuItem":
-                ws.cell(row=1, column=7, value="Price")
+                header_cell = ws.cell(row=1, column=7, value="Price")
+                # Style Match
+                header_cell.font = Font(bold=True)
+                header_cell.border = Border(bottom=Side(style='thin'))
             
             # 4. Insert Data (if not empty)
             if not is_empty_template:
