@@ -41,10 +41,10 @@ config_map = {
     "Google Gemini 2.5 Flash": ("gemini", "gemini-2.5-flash"),
     "Google Gemini 2.5 Flash Lite": ("gemini", "gemini-2.5-flash-lite"),
     "Google Gemini 2.5 Pro": ("gemini", "gemini-2.5-pro"),
-    "Google Gemini 3.0 Pro": ("gemini", "gemini-3-pro"),
-    "Google Gemma 3 1B": ("gemini", "gemma-3-1b"),
-    "Google Gemma 3 12B": ("gemini", "gemma-3-12b"),
-    "Google Gemma 3 27B": ("gemini", "gemma-3-27b"),
+    "Google Gemini 3.0 Pro": ("gemini", "gemini-3-pro-preview"), # Updated to Preview
+    "Google Gemma 3 1B": ("gemini", "gemma-3-1b-it"), # Estimated IT
+    "Google Gemma 3 12B": ("gemini", "gemma-3-12b-it"), # Estimated IT
+    "Google Gemma 3 27B": ("gemini", "gemma-3-27b-it"), # Estimated IT
     "OpenAI (GPT-4o)": ("openai", "gpt-4o"),
     "Anthropic (Claude 3.5 Sonnet)": ("anthropic", "claude-3-5-sonnet-20241022"),
     "DeepSeek (Chat Only)": ("deepseek", "deepseek-chat")
