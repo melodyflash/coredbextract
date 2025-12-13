@@ -19,7 +19,8 @@ class AIService:
                 "number": 100, 
                 "name": "Classic Burger", 
                 "price": 12.50,
-                "description": "Juicy beef patty"
+                "description": "Juicy beef patty",
+                "modifiers": ["Burger Toppings", "Sides"]
             }
         ],
         "submenus": [
@@ -31,19 +32,24 @@ class AIService:
         ],
         "modifier_groups": [
             {
-                "number": 1000,
-                "name": "Burger Toppings"
+                "number": 10000,
+                "name": "Burger Toppings",
+                "items": [
+                    {"name": "Cheese", "price": 1.00},
+                    {"name": "Bacon", "price": 2.00}
+                ]
             }
         ]
     }
     
     RULES:
     1. EXPLICIT DATA ONLY. Do not infer or guess any values (like categories). Leave blank if not found.
-    2. Extract all visible ITEMS.
-    3. Treat menu sections (e.g. "Appetizers", "Lunch") as SUBMENUS, not categories.
-    4. For MODIFIER GROUPS, extract ONLY the Title/Name and a generated Number. DO NOT extract the individual modifier items (like "Lettuce", "Tomato") inside the group.
-    5. Provide realistic numbers starting from 100 for items, 200 for submenus, 10000 for mod groups.
-    6. Return ONLY the JSON. No markdown formatting.
+    2. Extract all visible ITEMS with their prices.
+    3. Treat menu sections (e.g. "Appetizers", "Lunch") as SUBMENUS.
+    4. For MODIFIER GROUPS: Extract the Title/Name AND all individual modifier items/options within it.
+    5. For MODIFIER ITEMS: Extract the Name and Helper Price (if any).
+    6. Provide realistic numbers starting from 100 for items, 200 for submenus, 10000 for mod groups.
+    7. Return ONLY the JSON. No markdown formatting.
     """
 
     def analyze_file(self, file_path: str, mime_type: str, api_key: str, provider: str = "gemini", model_name: str = "gemini-2.0-flash") -> dict:
