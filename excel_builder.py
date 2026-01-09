@@ -3,6 +3,7 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, Protection, Border, Side
 from openpyxl.comments import Comment
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.protection import SheetProtection
 from openpyxl.utils import quote_sheetname, get_column_letter
 import os
 import sys
@@ -380,6 +381,13 @@ class ExcelBuilder:
         # 1. DELETE Rows FIRST to stabilize indices
         # Deleting 5 rows starting at 7
         ws.delete_rows(7, 5)
+        
+        # 2. Add items 3-5 to IMPORTANT INSTRUCTIONS section (after item 2 at row 6)
+        # Insert 3 new rows at row 7 for our additions
+        ws.insert_rows(7, 3)
+        ws.cell(row=7, column=1, value="3. All dropdowns are protected - select from the list only.")
+        ws.cell(row=8, column=1, value="4. Fields left blank will be auto-generated based on database defaults.")
+        ws.cell(row=9, column=1, value="5. Right-click row number -> Insert to add rows in ModifierGroup_Items.")
 
         # 2. FORMATTING (Targeting Final Indices)
         # User: "rows 21 27 and 31 do not need the entries to be bold"
@@ -416,14 +424,9 @@ class ExcelBuilder:
              
              parts = tips_content.split("TIPS")
              
-             # Logic Text
+             # Logic Text - No more ADDITIONAL NOTES section, it's now in the IMPORTANT INSTRUCTIONS at top
              button_expl_lines = [
                 parts[0].strip(), # Pre-Tips text
-                "",
-                "IMPORTANT INSTRUCTIONS:",
-                "1. All dropdowns are protected - select from the list only.",
-                "2. If you need additional rows in ModifierGroup_Items, right-click row number -> Insert.",
-                "3. Fields left blank will be auto-generated based on database defaults.",
                 "",
                 "BUTTON POSITION LOGIC:",
                 "1. MenuSubmenu (ButtonPositionIndex):",
@@ -449,11 +452,11 @@ class ExcelBuilder:
                  
              for i, line in enumerate(button_expl_lines):
                  cell = ws.cell(row=target_row + i, column=target_col, value=line)
-                 if "IMPORTANT INSTRUCTIONS:" in line or "BUTTON POSITION LOGIC:" in line or "MODIFIER GROUPS:" in line:
+                 if "BUTTON POSITION LOGIC:" in line or "MODIFIER GROUPS:" in line:
                      cell.font = Font(bold=True)
 
     def get_template_path(self):
-        filename = "Aloha_Import_Sample_3.xlsx"
+        filename = "Aloha_Import_Template_Generated.xlsx"
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
                 path = os.path.join(sys._MEIPASS, filename)
@@ -495,7 +498,7 @@ class ExcelBuilder:
                  notes = guide_notes.get(sheet_name)
                  if notes:
                      ws.append(notes)
-                     for cell in ws[2]: cell.font = Font(italic=True, color="00808080")
+                     for cell in ws[2]: cell.font = Font(italic=True)
             
             # 3. Handle Special Columns
             # Category: Remove OwnerName
@@ -537,12 +540,12 @@ class ExcelBuilder:
                         # Logic: If JSON said "Item Price", we put "FORMULA_PRICE".
                         if len(row_data) > 9 and row_data[9] == "FORMULA_PRICE":
                              # Unbreakable Link attempt: The cell value is the Formula.
-                             row_data[9] = f"=IFERROR(VLOOKUP(I{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
+                             row_data[9] = f"=IFERROR(VLOOKUP(I{curr_row}, Item!$B:$E, 4, FALSE), 0.00)"
                             
                     elif sheet_name == "SubmenuItem":
                         # Item=C(3), Price=G(7) (Index 6), PriceMethod=D(4) (Index 3)
                          if len(row_data) > 6 and row_data[6] == "FORMULA_PRICE":
-                             row_data[6] = f"=IFERROR(VLOOKUP(C{curr_row}, Item!$C:$E, 3, FALSE), 0.00)"
+                             row_data[6] = f"=IFERROR(VLOOKUP(C{curr_row}, Item!$B:$E, 4, FALSE), 0.00)"
                     
                     # Clean Text
                     clean_row = []
@@ -555,26 +558,28 @@ class ExcelBuilder:
                     
                     # Style Note in ModGroup (Red Text for "<- Right Click...")
                     if sheet_name == "ModifierGroup_Items" and clean_row[0] and "Right Click" in str(clean_row[0]):
-                         ws.cell(row=curr_row, column=1).font = Font(italic=True, size=9, color="00FF0000")
+                         ws.cell(row=curr_row, column=1).font = Font(italic=True, size=9)
 
             # 5. Protection (Robust Setup)
-            ws.protection.password = "" 
-            ws.protection.sheet = True  # Enable protection
-            
-            # In openpyxl: True = BLOCKED, False = ALLOWED
-            # Set to False to ALLOW these user actions
-            ws.protection.formatCells = False
-            ws.protection.formatColumns = False
-            ws.protection.formatRows = False
-            ws.protection.insertColumns = False
-            ws.protection.insertRows = False
-            ws.protection.deleteColumns = False
-            ws.protection.deleteRows = False
-            ws.protection.sort = False
-            ws.protection.autoFilter = False
-            ws.protection.pivotTables = False
-            ws.protection.selectLockedCells = False
-            ws.protection.selectUnlockedCells = False
+            # First, completely remove any existing protection from template
+            ws.protection.sheet = False
+
+            # Now create fresh protection with NO password
+            ws.protection = SheetProtection(
+                sheet=True,
+                formatCells=False,
+                formatColumns=False,
+                formatRows=False,
+                insertColumns=False,
+                insertRows=False,
+                deleteColumns=False,
+                deleteRows=False,
+                sort=False,
+                autoFilter=False,
+                pivotTables=False,
+                selectLockedCells=False,
+                selectUnlockedCells=False
+            )
             
             # Unlock Data Range (Row 2 - 5000)
             max_r = 5000 
@@ -594,13 +599,14 @@ class ExcelBuilder:
 
             if sheet_name == "Item":
                # Dropdowns: Type(D), Tax(G), Cat(H), ModGroups(I-R)
-               # Category/Tax Names
-               add_strict_list(ws, get_list_formula('Category', '$C$2:$C$500'), f"H2:H{max_r}")
-               add_strict_list(ws, get_list_formula('TaxGroup', '$C$2:$C$500'), f"G2:G{max_r}")
-               
-               # ModGroups (I-R) - Lookup LongName (Column C) from ModifierGroup_Items sheet
-               # Only group header rows have LongName populated, so dropdown shows only group names
-               add_strict_list(ws, get_list_formula('ModifierGroup_Items', '$C$2:$C$200'), f"I2:R{max_r}")
+               # Category Name (Column B) - Import looks up by Name
+               add_strict_list(ws, get_list_formula('Category', '$B$2:$B$500'), f"H2:H{max_r}")
+               # TaxGroup Name (Column B) - Import looks up by Name
+               add_strict_list(ws, get_list_formula('TaxGroup', '$B$2:$B$500'), f"G2:G{max_r}")
+
+               # ModGroups (I-R) - Lookup ShortName (Column B) from ModifierGroup_Items sheet
+               # Import looks up by ShortName (15 chars max)
+               add_strict_list(ws, get_list_formula('ModifierGroup_Items', '$B$2:$B$200'), f"I2:R{max_r}")
                
                # Type (D) - Protected dropdown (Standard, Gift Card)
                dv_type = DataValidation(type="list", formula1='"Standard,Gift Card"', allow_blank=True)
@@ -628,8 +634,8 @@ class ExcelBuilder:
                 dv_type.add(f"C2:C{max_r}")  # Column C is Type in Category sheet
 
             elif sheet_name == "ModifierGroup_Items":
-                # Lookup Item (I)
-                add_strict_list(ws, get_list_formula('Item', '$C$2:$C$2000'), f"I2:I{max_r}")
+                # Lookup Item (I) - Import looks up by ShortName (Column B, 15 chars max)
+                add_strict_list(ws, get_list_formula('Item', '$B$2:$B$2000'), f"I2:I{max_r}")
                 
                 # Price Method (M)
                 dv_pm = DataValidation(type="list", formula1='"Item Price,Button Price"', allow_blank=True)
@@ -674,9 +680,10 @@ class ExcelBuilder:
                 dv_lock.add(f"A2:C{max_r}")
 
             elif sheet_name == "SubmenuItem":
-                # Submenu (A), Item (C)
-                add_strict_list(ws, get_list_formula('Submenu', '$C$2:$C$500'), f"A2:A{max_r}")
-                add_strict_list(ws, get_list_formula('Item', '$C$2:$C$2000'), f"C2:C{max_r}")
+                # Submenu (A) - Import looks up by ShortName (Column B, 15 chars max)
+                add_strict_list(ws, get_list_formula('Submenu', '$B$2:$B$500'), f"A2:A{max_r}")
+                # Item (C) - Import looks up by ShortName (Column B, 15 chars max)
+                add_strict_list(ws, get_list_formula('Item', '$B$2:$B$2000'), f"C2:C{max_r}")
                 
                 # Type (B) - Protected dropdown (Item Button, PLU Button)
                 dv_type = DataValidation(type="list", formula1='"Item Button,PLU Button"', allow_blank=True)
@@ -702,10 +709,10 @@ class ExcelBuilder:
                 dv_p.add(f"G2:G{max_r}")
 
             elif sheet_name == "MenuSubmenu":
-                # MenuName (A) - Lookup LongName from Menu sheet (Column C)
-                add_strict_list(ws, get_list_formula('Menu', '$C$2:$C$100'), f"A2:A{max_r}")
-                # SubmenuName (B) - Lookup LongName from Submenu sheet (Column C)
-                add_strict_list(ws, get_list_formula('Submenu', '$C$2:$C$500'), f"B2:B{max_r}")
+                # MenuName (A) - Import looks up by ShortName (Column B, 15 chars max)
+                add_strict_list(ws, get_list_formula('Menu', '$B$2:$B$100'), f"A2:A{max_r}")
+                # SubmenuName (B) - Import looks up by ShortName (Column B, 15 chars max)
+                add_strict_list(ws, get_list_formula('Submenu', '$B$2:$B$500'), f"B2:B{max_r}")
 
 
             # Protection is already enabled via ws.protection.sheet = True above
