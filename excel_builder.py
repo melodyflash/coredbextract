@@ -10,6 +10,129 @@ import sys
 import io
 import re
 
+
+class UniqueNameGenerator:
+    """
+    Generates unique ShortNames (15 chars) and LongNames (23 chars) with duplicate detection.
+    Uses numeric suffixes to differentiate duplicates.
+    """
+    
+    def __init__(self):
+        self.seen_shortnames = set()           # Track all used ShortNames
+        self.full_to_short = {}                # "Eggplant Margherita Pizza (Personal)" → "Eggplant Margh1"
+        self.full_to_long = {}                 # "Eggplant Margherita Pizza (Personal)" → "Eggplant Margherita Pi"
+        
+        # Separate tracking by entity type for clarity
+        self.item_names = {}                   # Item full_name → shortname
+        self.modifier_group_names = {}         # ModGroup full_name → shortname  
+        self.submenu_names = {}                # Submenu full_name → shortname
+    
+    def clean_text(self, text):
+        """Clean text of special characters before processing."""
+        if not text:
+            return ""
+        cleaned = re.sub(r'[^a-zA-Z0-9\s\.,\'\-\(\)\&/<> \u00C0-\u00FF]', '', str(text))
+        return cleaned.strip()
+    
+    def generate_unique_shortname(self, full_name, entity_type="item"):
+        """
+        Generate a unique 15-char ShortName for a given full name.
+        
+        Args:
+            full_name: The original full name from AI
+            entity_type: "item", "modifier_group", or "submenu"
+            
+        Returns:
+            tuple: (unique_shortname, longname)
+        """
+        if not full_name:
+            return "", ""
+        
+        # Clean the name first
+        cleaned = self.clean_text(full_name)
+        if not cleaned:
+            return "", ""
+        
+        # Check if we already processed this exact full name
+        if full_name in self.full_to_short:
+            return self.full_to_short[full_name], self.full_to_long[full_name]
+        
+        # Generate LongName (23 chars)
+        long_name = cleaned[:23]
+        
+        # Generate base ShortName (15 chars)
+        base_short = cleaned[:15]
+        
+        # Check if this ShortName is unique
+        if base_short not in self.seen_shortnames:
+            short_name = base_short
+        else:
+            # Need to add numeric suffix for uniqueness
+            short_name = self._get_unique_with_suffix(cleaned)
+        
+        # Store the mappings
+        self.seen_shortnames.add(short_name)
+        self.full_to_short[full_name] = short_name
+        self.full_to_long[full_name] = long_name
+        
+        # Store in entity-specific dict
+        if entity_type == "item":
+            self.item_names[full_name] = short_name
+        elif entity_type == "modifier_group":
+            self.modifier_group_names[full_name] = short_name
+        elif entity_type == "submenu":
+            self.submenu_names[full_name] = short_name
+        
+        return short_name, long_name
+    
+    def _get_unique_with_suffix(self, cleaned_name):
+        """
+        Generate unique ShortName with numeric suffix.
+        Tries: base14 + 1-9, then base13 + 10-99
+        """
+        # Try single digit suffix (1-9)
+        base14 = cleaned_name[:14]
+        for i in range(1, 10):
+            candidate = f"{base14}{i}"
+            if candidate not in self.seen_shortnames:
+                return candidate
+        
+        # Try double digit suffix (10-99)
+        base13 = cleaned_name[:13]
+        for i in range(10, 100):
+            candidate = f"{base13}{i}"
+            if candidate not in self.seen_shortnames:
+                return candidate
+        
+        # Fallback: triple digit (very unlikely)
+        base12 = cleaned_name[:12]
+        for i in range(100, 1000):
+            candidate = f"{base12}{i}"
+            if candidate not in self.seen_shortnames:
+                return candidate
+        
+        # Last resort: just return with timestamp-like suffix
+        import time
+        return f"{cleaned_name[:10]}{int(time.time()) % 100000}"
+    
+    def lookup_shortname(self, full_name, entity_type=None):
+        """
+        Look up the ShortName for a given full name.
+        Useful for cross-referencing (e.g., SubmenuItem referencing Item).
+        """
+        if full_name in self.full_to_short:
+            return self.full_to_short[full_name]
+        
+        # Try truncated match (AI might have given slightly different name)
+        cleaned = self.clean_text(full_name) if full_name else ""
+        for stored_full, short in self.full_to_short.items():
+            if self.clean_text(stored_full)[:15] == cleaned[:15]:
+                return short
+        
+        # Not found - return truncated version (will likely fail validation but logged)
+        return cleaned[:15] if cleaned else ""
+
+
 class ExcelBuilder:
     def __init__(self):
         self.data = {
@@ -23,13 +146,11 @@ class ExcelBuilder:
             "Menu": [],
             "MenuSubmenu": []
         }
-
-    def _get_names(self, raw_name):
-        if not raw_name: return "", ""
-        clean = str(raw_name).strip()
-        long_n = clean[:23]
-        short_n = clean[:15]
-        return short_n, long_n
+        self.name_generator = UniqueNameGenerator()
+        
+        # Track item indices for Phase 3 modifier assignment
+        self._item_indices = {}  # full_name → index in self.data["Item"]
+        self._modifier_group_shortnames = set()  # Valid modifier group ShortNames
 
     def clean_text(self, text):
         if not text: return None
@@ -37,127 +158,250 @@ class ExcelBuilder:
         return cleaned.strip()
 
     def add_data(self, json_data: dict):
-        # 1. Categories - SKIPPED
+        """
+        Main entry point for processing AI JSON data.
+        Implements phased processing to handle dependencies correctly.
+        """
+        # Phase 0: Pre-process all names to generate unique ShortNames
+        self._preprocess_names(json_data)
+        
+        # Phase 1: Create all items (regular + modifier items) with I-R empty
+        self._create_items(json_data)
+        
+        # Phase 2: Create modifier groups (references Item ShortNames)
+        self._create_modifier_groups(json_data)
+        
+        # Phase 3: Update items with modifier group assignments (I-R columns)
+        self._assign_modifier_groups_to_items(json_data)
+        
+        # Phase 4: Create submenus and submenu items
+        self._create_submenus(json_data)
 
-        # 2. Process Modifier Groups FIRST to collect valid ShortNames
-        valid_modifier_groups = set()
+    def _preprocess_names(self, json_data: dict):
+        """
+        Phase 0: Scan all names and generate unique ShortNames upfront.
+        This ensures no duplicates across the entire dataset.
+        """
+        # Process modifier group names
+        for mg in json_data.get("modifier_groups", []):
+            raw_name = mg.get("name") or ""
+            if raw_name:
+                short, _ = self.name_generator.generate_unique_shortname(raw_name, "modifier_group")
+                self._modifier_group_shortnames.add(short)
+            
+            # Process modifier items within each group
+            for m_item in mg.get("items", []):
+                m_raw = m_item.get("name") or ""
+                if m_raw:
+                    self.name_generator.generate_unique_shortname(m_raw, "item")
+        
+        # Process regular items
+        for item in json_data.get("items", []):
+            raw_name = item.get("name") or ""
+            if raw_name:
+                self.name_generator.generate_unique_shortname(raw_name, "item")
+        
+        # Process submenus
+        for sm in json_data.get("submenus", []):
+            raw_name = sm.get("name") or ""
+            if raw_name:
+                self.name_generator.generate_unique_shortname(raw_name, "submenu")
+
+    def _create_items(self, json_data: dict):
+        """
+        Phase 1: Create all items (regular + modifier items).
+        Modifier group assignments (columns I-R) are left empty at this stage.
+        """
         mod_item_number_start = 20000
         mod_item_count = 0
-
-        for mg_idx, mg in enumerate(json_data.get("modifier_groups", [])):
-            raw_name = mg.get("name") or ""
-            mg_short, mg_long = self._get_names(raw_name)
-
-            # Track valid modifier group ShortNames
-            if mg_short:
-                valid_modifier_groups.add(mg_short)
-
-            mg_num = mg.get("number")
-            if not isinstance(mg_num, int):
-                try: mg_num = int(mg_num)
-                except: mg_num = 10000 + mg_idx
-
-            if mg_num < 10000 or mg_num > 19999:
-                mg_num = 10000 + (mg_idx * 10)
-
-            items = mg.get("items", [])
-            rows_needed = max(len(items), 6)
-
-            for i in range(rows_needed):
-                row_pos = i // 3
-                col_pos = i % 3
-
-                m_item_name = None
-                m_price = None
-                m_price_method = None
-
-                if i < len(items):
-                    m_item = items[i]
-                    m_raw = m_item.get("name") or ""
-                    m_short, m_long = self._get_names(m_raw)
-
-                    try: m_p = float(m_item.get("price", 0.0))
-                    except: m_p = 0.0
-
-                    m_number = mod_item_number_start + mod_item_count
-                    mod_item_count += 1
-                    self.data["Item"].append([
-                        m_number, m_short, m_long, "Standard", m_p, "Item Price",
-                         None, None] + [None]*10)
-
-                    m_item_name = m_short  # Use ShortName for ItemName lookup
-                    m_price = "FORMULA_PRICE"
-                    m_price_method = "Item Price"
-
-                if i == 0:
-                    # FIRST ROW - Column H uses ShortName (mg_short)
-                    self.data["ModifierGroup_Items"].append([
-                        mg_num, mg_short, mg_long, None, None, None, None,
-                        mg_short, m_item_name, m_price, row_pos, col_pos, m_price_method
-                    ])
-                else:
-                    # SPACER ROWS - Column H uses ShortName (mg_short)
-                    self.data["ModifierGroup_Items"].append([
-                        None, None, None, None, None, None, None,
-                        mg_short, m_item_name, m_price, row_pos, col_pos, m_price_method
-                    ])
-
-        # 3. Items - Filter modifiers to only include valid ones from ModifierGroup_Items
+        
+        # First, add modifier items (from modifier_groups[].items[])
+        for mg in json_data.get("modifier_groups", []):
+            for m_item in mg.get("items", []):
+                m_raw = m_item.get("name") or ""
+                if not m_raw:
+                    continue
+                
+                # Use pre-generated ShortName
+                m_short = self.name_generator.lookup_shortname(m_raw, "item")
+                m_long = self.name_generator.full_to_long.get(m_raw, m_raw[:23])
+                
+                try:
+                    m_price = float(m_item.get("price", 0.0))
+                except:
+                    m_price = 0.0
+                
+                m_number = mod_item_number_start + mod_item_count
+                mod_item_count += 1
+                
+                # Track index for later reference
+                self._item_indices[m_raw] = len(self.data["Item"])
+                
+                # Add item row with empty modifier assignments (I-R = None)
+                self.data["Item"].append([
+                    m_number, m_short, m_long, "Standard", m_price, "Item Price",
+                    None, None  # TaxGroup, Category
+                ] + [None] * 10)  # ModifierGroup1-10 empty
+        
+        # Then, add regular items
         for item in json_data.get("items", []):
+            raw_name = item.get("name") or ""
+            if not raw_name:
+                continue
+            
+            # Use pre-generated ShortName
+            short_name = self.name_generator.lookup_shortname(raw_name, "item")
+            long_name = self.name_generator.full_to_long.get(raw_name, raw_name[:23])
+            
             try:
                 price = item.get("price", 0.0)
                 if isinstance(price, str):
                     price = float(price.replace('$', '').replace(',', ''))
             except:
                 price = 0.0
-
-            raw_name = item.get("name") or ""
-            short_name, long_name = self._get_names(raw_name)
-
-            row = [
+            
+            # Track index for Phase 3 modifier assignment
+            self._item_indices[raw_name] = len(self.data["Item"])
+            
+            # Add item row with empty modifier assignments (filled in Phase 3)
+            self.data["Item"].append([
                 item.get("number"),
                 short_name,
                 long_name,
-                "Standard",  # Type
+                "Standard",
                 price,
-                "Item Price", # PriceMethod
-                None, # TaxGroupName
-                None, # CategoryName
-            ]
+                "Item Price",
+                None,  # TaxGroupName
+                None,  # CategoryName
+            ] + [None] * 10)  # ModifierGroup1-10 empty for now
 
-            # Filter modifiers: only include if ShortName exists in ModifierGroup_Items Column B
+    def _create_modifier_groups(self, json_data: dict):
+        """
+        Phase 2: Create ModifierGroup_Items rows.
+        References Item ShortNames for the modifier items.
+        """
+        for mg_idx, mg in enumerate(json_data.get("modifier_groups", [])):
+            raw_name = mg.get("name") or ""
+            if not raw_name:
+                continue
+            
+            # Use pre-generated ShortName for the group
+            mg_short = self.name_generator.lookup_shortname(raw_name, "modifier_group")
+            mg_long = self.name_generator.full_to_long.get(raw_name, raw_name[:23])
+            
+            mg_num = mg.get("number")
+            if not isinstance(mg_num, int):
+                try:
+                    mg_num = int(mg_num)
+                except:
+                    mg_num = 10000 + mg_idx
+            
+            if mg_num < 10000 or mg_num > 19999:
+                mg_num = 10000 + (mg_idx * 10)
+            
+            items = mg.get("items", [])
+            rows_needed = max(len(items), 6)
+            
+            for i in range(rows_needed):
+                row_pos = i // 3
+                col_pos = i % 3
+                
+                m_item_short = None
+                m_price = None
+                m_price_method = None
+                
+                if i < len(items):
+                    m_item = items[i]
+                    m_raw = m_item.get("name") or ""
+                    
+                    # Look up the pre-generated ShortName for this modifier item
+                    m_item_short = self.name_generator.lookup_shortname(m_raw, "item")
+                    m_price = "FORMULA_PRICE"
+                    m_price_method = "Item Price"
+                
+                if i == 0:
+                    # FIRST ROW - includes group header info
+                    self.data["ModifierGroup_Items"].append([
+                        mg_num, mg_short, mg_long, None, None, None, None,
+                        mg_short,  # Column H: ModifierGroupName
+                        m_item_short,  # Column I: ItemName (ShortName)
+                        m_price, row_pos, col_pos, m_price_method
+                    ])
+                else:
+                    # SPACER ROWS - only modifier item assignment
+                    self.data["ModifierGroup_Items"].append([
+                        None, None, None, None, None, None, None,
+                        mg_short,  # Column H: ModifierGroupName
+                        m_item_short,  # Column I: ItemName (ShortName)
+                        m_price, row_pos, col_pos, m_price_method
+                    ])
+
+    def _assign_modifier_groups_to_items(self, json_data: dict):
+        """
+        Phase 3: Go back to Item data and fill columns I-R with modifier group ShortNames.
+        Only assigns modifiers that exist in our modifier group data.
+        """
+        for item in json_data.get("items", []):
+            raw_name = item.get("name") or ""
+            if raw_name not in self._item_indices:
+                continue
+            
+            item_idx = self._item_indices[raw_name]
             modifiers = item.get("modifiers", [])
+            
+            # Filter and convert modifiers to their ShortNames
             filtered_modifiers = []
             for mod in modifiers:
-                if mod:
-                    # Get ShortName version (15 chars) and check if it exists
-                    mod_short = str(mod).strip()[:15]
-                    if mod_short in valid_modifier_groups:
-                        filtered_modifiers.append(mod_short)
+                if not mod:
+                    continue
+                
+                # Look up the ShortName for this modifier group
+                mod_short = self.name_generator.lookup_shortname(mod, "modifier_group")
+                
+                # Only include if it exists in our modifier group data
+                if mod_short in self._modifier_group_shortnames:
+                    filtered_modifiers.append(mod_short)
+            
+            # Update columns I-R (indices 8-17) in the item row
+            for i, mod_short in enumerate(filtered_modifiers[:10]):
+                self.data["Item"][item_idx][8 + i] = mod_short
 
-            # Pad to 10 slots
-            filtered_modifiers += [None] * (10 - len(filtered_modifiers))
-            row.extend(filtered_modifiers[:10])
-
-            self.data["Item"].append(row)
-
-        # 4. Submenus
+    def _create_submenus(self, json_data: dict):
+        """
+        Phase 4: Create Submenu and SubmenuItem entries.
+        SubmenuItem references use pre-generated ShortNames.
+        """
         for sm in json_data.get("submenus", []):
             raw_name = sm.get("name") or ""
-            sm_short, sm_long = self._get_names(raw_name)
-
+            if not raw_name:
+                continue
+            
+            # Use pre-generated ShortName for submenu
+            sm_short = self.name_generator.lookup_shortname(raw_name, "submenu")
+            sm_long = self.name_generator.full_to_long.get(raw_name, raw_name[:23])
+            
             self.data["Submenu"].append([
                 sm.get("number"),
                 sm_short,
                 sm_long
             ])
-
+            
+            # Create SubmenuItem entries
             for idx, item_name in enumerate(sm.get("items", [])):
                 row_pos = idx // 3
                 col_pos = idx % 3
-
+                
+                # Look up the Item's ShortName (not the raw name from AI)
+                item_short = self.name_generator.lookup_shortname(item_name, "item")
+                
                 self.data["SubmenuItem"].append([
-                    sm_short, "Item Button", item_name, "Item Price", row_pos, col_pos, "FORMULA_PRICE"
+                    sm_short,  # Column A: SubmenuName (ShortName)
+                    "Item Button",
+                    item_short,  # Column C: ItemName (ShortName)
+                    "Item Price",
+                    row_pos,
+                    col_pos,
+                    "FORMULA_PRICE"
                 ])
 
     def update_instructions_tab(self, wb):
