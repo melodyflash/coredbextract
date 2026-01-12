@@ -347,7 +347,7 @@ class ExcelBuilder:
                 continue
             
             item_idx = self._item_indices[raw_name]
-            modifiers = item.get("modifiers", [])
+            modifiers = item.get("modifiers") or []
             
             # Filter and convert modifiers to their ShortNames
             filtered_modifiers = []
@@ -739,3 +739,4 @@ if __name__ == "__main__":
     with open("Aloha_Import_Template_Consolidated_Empty.xlsx", "wb") as f:
         f.write(empty_data)
     print("Success! Created 'Aloha_Import_Template_Consolidated_Empty.xlsx'.")
+
