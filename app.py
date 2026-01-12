@@ -213,7 +213,7 @@ st.info("ℹ️ **App Overview:** This tool populates the **Item**, **Submenu**,
 
 # Clean Template Download
 with st.expander("📄 Need a blank template?"):
-    st.write("Download a clean, password-protected template with usage notes.")
+    st.write("Download a clean, protected template with usage notes.")
     if st.button("Generate Empty Template"):
         try:
             builder = ExcelBuilder()
@@ -354,3 +354,4 @@ with tab_url:
                      st.error(f"An error occurred: {str(e)}")
     elif not api_key:
         st.warning("Please enter your API Key in the sidebar to proceed.")
+
