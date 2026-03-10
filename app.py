@@ -18,7 +18,6 @@ provider_options = [
     "Google Gemini 2.5 Pro",
     "Google Gemini 3 Flash",
     "Google Gemini 3.1 Pro",
-    "Google Gemini 3.1 Flash Lite",
 ]
 
 provider_selection = st.sidebar.selectbox("AI Model", provider_options)
@@ -30,7 +29,6 @@ config_map = {
     "Google Gemini 2.5 Pro": ("gemini", "gemini-2.5-pro"),
     "Google Gemini 3 Flash": ("gemini", "gemini-3-flash-preview"),
     "Google Gemini 3.1 Pro": ("gemini", "gemini-3.1-pro-preview"),
-    "Google Gemini 3.1 Flash Lite": ("gemini", "gemini-3.1-flash-lite-preview"),
 }
 
 # Pricing Data (Per 1 Million Tokens)
@@ -59,12 +57,6 @@ MODEL_PRICING = {
         "output_price": 0.00,
         "rpm": "Preview - Rate limits apply",
         "limit": "2M Context"
-    },
-    "gemini-3.1-flash-lite-preview": {
-        "input_price": 0.00,
-        "output_price": 0.00,
-        "rpm": "Preview - Rate limits apply",
-        "limit": "1M Context"
     },
 }
 
@@ -142,13 +134,6 @@ MODEL_INFO = {
         "price": "Preview - Free while in preview.",
         "strength": "Cutting-edge reasoning and coding capabilities.",
         "limit": "Preview stability. 2M Context.",
-        "url": "https://ai.google.dev/gemini-api/docs/models"
-    },
-    "Google Gemini 3.1 Flash Lite": {
-        "desc": "Most cost-efficient model for high-volume, low-latency use cases.",
-        "price": "Preview - Free while in preview.",
-        "strength": "Fastest response, lowest cost. Best for simple text-heavy menus.",
-        "limit": "Preview stability. May miss subtle details in complex layouts. 1M Context.",
         "url": "https://ai.google.dev/gemini-api/docs/models"
     },
 }
